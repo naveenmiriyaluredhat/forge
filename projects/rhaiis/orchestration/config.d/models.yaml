@@ -5,6 +5,13 @@ qwen3-0_6b:
   vllm_args:
     tensor-parallel-size: 1
 
+# Dashboard override stub (set hf_model_id and vllm_args at runtime)
+custom:
+  name: custom
+  hf_model_id: ""
+  vllm_args:
+    tensor-parallel-size: 1
+
 # Llama-4 Scout (MoE)
 llama-4-scout:
   name: Llama-4-Scout-17B-16E-Instruct
@@ -83,6 +90,7 @@ llama-3-3-70b-fp8:
   hf_model_id: RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic
   vllm_args:
     tensor-parallel-size: 4
+    kv-cache-dtype: fp8
 
 llama-3-3-70b-w8a8:
   name: Llama-3.3-70B-Instruct-W8A8

@@ -31,7 +31,7 @@ def _reset_project_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _init_project_config() -> None:
-    core_config.init(PROJECT_ORCHESTRATION_DIR)
+    core_config.init(PROJECT_ORCHESTRATION_DIR, apply_cluster_config=False)
 
 
 def test_deployment_presets_resolve_deployments() -> None:
@@ -107,7 +107,7 @@ def test_benchmark_workloads_are_available() -> None:
         assert benchmark["timeout_seconds"] == 3600
     assert multi_turn["timeout_seconds"] == 7200
 
-    assert concurrent["args"]["rate"] == [300, 200, 100, 50, 1]
+    assert concurrent["args"]["rate"] == [1, 50, 100, 200, 300]
     assert heavy["args"]["max_seconds"] == 600
     assert "prompt_tokens_stdev=8500" in heavy["args"]["data"]
     assert "output_tokens_max=8000" in heavy["args"]["data"]

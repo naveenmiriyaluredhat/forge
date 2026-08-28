@@ -210,12 +210,6 @@ def _run_test(
         logger.warning("MLflow run pre-creation failed; continuing", exc_info=True)
         mlflow_destination = None
 
-    if mlflow_destination:
-        import yaml as _yaml
-
-        mlflow_marker = env.ARTIFACT_DIR / "_mlflow_destination.yaml"
-        mlflow_marker.write_text(_yaml.safe_dump(mlflow_destination, sort_keys=False))
-
     try:
         isvc_labels = {"opendatahub.io/dashboard": "true"}
         if profiler_enabled and not engine_supports_profiler(engine, profiler_cfg):
@@ -700,7 +694,7 @@ def _upload_predictor_log(run_uuid: str) -> None:
     from projects.rhaiis.postprocess.s3_dashboard import upload_predictor_log_to_s3
 
     matches = sorted(
-        Path(env.ARTIFACT_DIR).glob("*__capture_isvc_state/artifacts/inferenceservice.pods.logs")
+        Path(env.ARTIFACT_DIR).glob("*__capture_isvc_state/artifacts/inferenceservice.pods.log")
     )
     log_path = matches[-1] if matches else None
     if not log_path or not log_path.exists():

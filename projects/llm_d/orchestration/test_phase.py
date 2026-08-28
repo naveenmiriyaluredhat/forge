@@ -148,25 +148,22 @@ def extract_kpi_labels_from_config() -> dict[str, str]:
     """
     kpi_labels = {}
 
-    # Extract platform name
-    platform_name = config.project.get_config("cpt.kpi.labels.platform_name")
-    if platform_name:
-        kpi_labels["platform"] = platform_name
+    kpi_labels.update(config.project.get_config("cpt.kpi.labels"))
 
-    # Extract gpu_type
-    gpu_type = config.project.get_config("cpt.kpi.labels.gpu_type")
-    if gpu_type:
-        kpi_labels["gpu_type"] = gpu_type
+    for k, v in list(kpi_labels.items()):
+        if v is None:
+            del kpi_labels[k]
 
-    # Extract test_harness
-    test_harness = config.project.get_config("cpt.kpi.labels.test_harness")
-    if test_harness:
-        kpi_labels["test_harness"] = test_harness
+    product_version = config.project.get_config("cpt.kpi.labels.product_version")
+    if product_version:
+        kpi_labels["product_version"] = product_version
 
     return kpi_labels
 
 
-def create_test_labels() -> None:
+def create_test_labels(
+    mlflow_destination: dict[str, str] | None = None,
+) -> None:
     """Create __test_labels__.yaml with model name and guidellm configuration."""
 
     model_name = runtime_config.get_model_name()
@@ -184,7 +181,12 @@ def create_test_labels() -> None:
     # Extract kpi_labels from config
     kpi_labels = extract_kpi_labels_from_config()
 
-    write_test_labels(env.ARTIFACT_DIR, labels, kpi_labels=kpi_labels if kpi_labels else None)
+    write_test_labels(
+        env.ARTIFACT_DIR,
+        labels,
+        kpi_labels=kpi_labels if kpi_labels else None,
+        mlflow_destination=mlflow_destination,
+    )
     logger.info("Created test labels: %s", labels)
 
     # Dump config.project to config.yaml
@@ -239,6 +241,9 @@ def update_test_labels_with_status(success: bool, message: str) -> None:
     logger.info(
         "Updated test labels with completion status: success=%s, message=%s", success, message
     )
+
+    if not success:
+        (test_labels_path.parent / "FAILURE.txt").write_text(message)
 
 
 def run_all_tests(stop_on_error: bool = False) -> int:
@@ -364,6 +369,14 @@ def do_test() -> int:
         # Delete all existing resources if configured
         cleanup_existing_resources(namespace)
 
+    try:
+        from projects.caliper.orchestration.export import precreate_mlflow_run_if_configured
+
+        mlflow_destination = precreate_mlflow_run_if_configured()
+    except Exception:
+        logger.error("MLflow run pre-creation failed; continuing", exc_info=True)
+        mlflow_destination = None
+
     endpoint_url: str | None = None
     primary_exc: tuple[type[BaseException], BaseException, Any] | None = None
     finalizer_exc: tuple[type[BaseException], BaseException, Any] | None = None
@@ -371,7 +384,7 @@ def do_test() -> int:
     actual_llmisvc_name = "llmisvc-na-not-computed"
     try:
         # Create test labels with actual model and profile information
-        create_test_labels()
+        create_test_labels(mlflow_destination=mlflow_destination)
 
         # Generate the LLMInferenceService name before deployment
         # so we have it available even if deployment fails
@@ -405,9 +418,11 @@ def do_test() -> int:
     except Exception as e:
         primary_exc = sys.exc_info()
         update_test_labels_with_status(False, f"Test failed with exception: {str(e)}")
+        logger.exception("Test failed with exception")
     except SignalInterrupt as e:
         primary_exc = sys.exc_info()
         update_test_labels_with_status(False, f"Test interrupted: {str(e)}")
+        logger.error("Test interrupted")
     finally:
         do_finalizers = config.project.get_config("runtime.run_test_finalizers")
         if primary_exc and isinstance(primary_exc[1], SignalInterrupt):
@@ -603,14 +618,14 @@ def deploy_inference_service_from_manifest(manifest_path: Path, actual_llmisvc_n
     logger.info("Deploying LLMInferenceService from manifest: %s", manifest_path)
 
     # Get scheduling wait configuration
-    wait_pods_scheduled = config.project.get_config("runtime.kserve.wait_long_scheduling")
+    wait_long_scheduling = config.project.get_config("runtime.kserve.wait_long_scheduling")
 
     endpoint_url = deploy_llmisvc.run(
         namespace=namespace,
         inference_service_manifest_path=str(manifest_path),
         gateway_status_address_name=gateway_status_address_name,
         dry_run=dry_run,
-        wait_pods_scheduled=wait_pods_scheduled,
+        wait_long_scheduling=wait_long_scheduling,
     )
 
     if dry_run:

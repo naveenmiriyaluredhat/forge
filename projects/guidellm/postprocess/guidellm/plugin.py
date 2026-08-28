@@ -6,65 +6,96 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from projects.caliper.engine.kpi.analyze import AnalysisConfig
 from projects.caliper.engine.model import (
     ParseResult,
     PostProcessingPlugin,
     TestBaseNode,
     UnifiedRunModel,
 )
+from projects.llm_d.postprocess.llm_d.parsing.kpis import GuideLLMKpiHandler
 
 from .ai_eval import GuideLLMAIEvaluator
-from .parsing import GuideLLMKpiHandler, GuideLLMParser
-from .plotting.kpi_report import generate_kpi_report
-from .plotting.performance_analysis import (
-    generate_comprehensive_performance_report,
-    generate_deployment_profile_report,
-)
+from .parsing import GuideLLMParser
 
 logger = logging.getLogger(__name__)
 
 
-# Analysis configuration for KPI regression testing
-analysis_config = AnalysisConfig(
-    comparison_keys=["product_version", "model_name"],
-    ignored_keys=[],
-    sorting_keys=["product_version"],
-    max_relative_regression=0.15,  # 15% threshold (LLM performance can vary more)
-    min_baseline_points=2,  # Require at least 2 baseline points for reliability
-)
+class _PlotRegistry:
+    """Lazy-loading plot registry that avoids importing pandas at module load time."""
+
+    def __init__(self):
+        self._registry: dict[str, dict[str, Any]] | None = None
+
+    def _ensure_loaded(self) -> dict[str, dict[str, Any]]:
+        """Populate registry on first use, keeping pandas out of module load."""
+        if self._registry is not None:
+            return self._registry
+
+        from .plotting.kpi_report import generate_kpi_report
+        from .plotting.performance_analysis import (
+            generate_comprehensive_performance_report,
+            generate_deployment_profile_report,
+        )
+
+        self._registry = {
+            "report_performance_analysis": {
+                "function": generate_comprehensive_performance_report,
+                "type": "report",
+                "kwargs": {
+                    "report_number": 0,
+                    "report_title": "GuideLLM Performance Analysis",
+                },
+                "description": "comprehensive performance analysis report (recommended)",
+            },
+            "report_kpi_summary": {
+                "function": generate_kpi_report,
+                "type": "report",
+                "kwargs": {
+                    "report_number": 1,
+                    "report_title": "GuideLLM KPI Summary",
+                },
+                "description": "KPI summary with test conditions and metrics",
+            },
+            "report_deployment_profile": {
+                "function": generate_deployment_profile_report,
+                "type": "report",
+                "kwargs": {
+                    "report_number": 2,
+                    "report_title": "GuideLLM Deployment Profile Analysis",
+                },
+                "description": "performance analysis comparing different product versions/models under identical test conditions",
+            },
+        }
+        return self._registry
+
+    def __getitem__(self, key):
+        return self._ensure_loaded()[key]
+
+    def __contains__(self, key):
+        return key in self._ensure_loaded()
+
+    def __iter__(self):
+        return iter(self._ensure_loaded())
+
+    def keys(self):
+        return self._ensure_loaded().keys()
+
+    def items(self):
+        return self._ensure_loaded().items()
+
+    def values(self):
+        return self._ensure_loaded().values()
+
+    def get(self, key, default=None):
+        return self._ensure_loaded().get(key, default)
+
+    def __setitem__(self, key, value):
+        # Ensure registry is loaded, then set the item
+        registry = self._ensure_loaded()
+        registry[key] = value
 
 
-# Plot registry - maps report names to their generator functions and parameters
-PLOT_REGISTRY = {
-    "report_performance_analysis": {
-        "function": generate_comprehensive_performance_report,
-        "type": "report",
-        "kwargs": {
-            "report_number": 0,
-            "report_title": "GuideLLM Performance Analysis",
-        },
-        "description": "comprehensive performance analysis report (recommended)",
-    },
-    "report_kpi_summary": {
-        "function": generate_kpi_report,
-        "type": "report",
-        "kwargs": {
-            "report_number": 1,
-            "report_title": "GuideLLM KPI Summary",
-        },
-        "description": "KPI summary with test conditions and metrics",
-    },
-    "report_deployment_profile": {
-        "function": generate_deployment_profile_report,
-        "type": "report",
-        "kwargs": {
-            "report_number": 2,
-            "report_title": "GuideLLM Deployment Profile Analysis",
-        },
-        "description": "performance analysis comparing different product versions/models under identical test conditions",
-    },
-}
+PLOT_REGISTRY = _PlotRegistry()
 
 
 class GuideLLMPlugin(PostProcessingPlugin):
@@ -116,7 +147,7 @@ class GuideLLMPlugin(PostProcessingPlugin):
         }
 
     @staticmethod
-    def register_plot(
+    def register_plot(  # noqa: FBT001
         name: str, function: callable, description: str, type_: str = "plot", **kwargs
     ) -> None:
         """Register a new plot or report generator function.
@@ -202,8 +233,10 @@ class GuideLLMPlugin(PostProcessingPlugin):
 
         return paths
 
-    def compute_kpis(self, model: UnifiedRunModel) -> list[dict[str, Any]]:
-        """Compute KPI values from the unified model."""
+    def compute_kpis(
+        self, model: UnifiedRunModel
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Compute KPI values from the unified model with optional status details."""
         return self.kpi_handler.compute_kpis(model)
 
     def export_kpis_to_csv(
@@ -222,10 +255,9 @@ class GuideLLMPlugin(PostProcessingPlugin):
         Returns:
             Path to the generated CSV file
         """
-        from .csv_export import KPICsvExporter
+        from projects.llm_d.postprocess.llm_d import csv_dashboard
 
-        exporter = KPICsvExporter()
-        return exporter.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
+        return csv_dashboard.export_kpis_to_csv(kpi_records, output_path, include_header_comments)
 
     def build_ai_data_payload(self, model: UnifiedRunModel) -> dict[str, Any]:
         """Build AI evaluation payload from the unified model."""

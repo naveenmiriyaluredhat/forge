@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,40 @@ from projects.caliper.postprocess.helpers.visualization_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Plot configuration constants
+PLOT_CONFIG = {
+    "width": 1700,
+    "height": 500,
+    "font": {"size": 12},
+    "title_font_size": 16,
+}
+
+PLOT_CONFIG_LARGE = {
+    "width": 1700,
+    "height": 600,
+    "font": {"size": 12},
+    "title_font_size": 16,
+}
+
+
+def _image_to_base64(image_path: str | Path) -> str:
+    """Convert an image file to a base64 data URI.
+
+    Args:
+        image_path: Path to the image file
+
+    Returns:
+        Base64 data URI string
+    """
+    try:
+        with open(image_path, "rb") as img_file:
+            img_data = img_file.read()
+            img_b64 = base64.b64encode(img_data).decode("utf-8")
+            return f"data:image/png;base64,{img_b64}"
+    except Exception as e:
+        logger.warning(f"Failed to convert image to base64: {e}")
+        return ""
 
 
 # Filesystem-unsafe characters for path sanitization
@@ -56,6 +91,30 @@ def _safe_get_curve_value(curves: dict, metric_name: str, index: int, default: A
         return default
 
 
+def _custom_configuration_sort_key(config_name: str) -> tuple[int, str]:
+    """
+    Create a sort key that ensures heterogeneous configurations appear before multi-turn.
+
+    Args:
+        config_name: Configuration name from test_configuration column
+
+    Returns:
+        Tuple of (priority, config_name) for sorting
+    """
+    # Convert to lowercase for case-insensitive comparison
+    config_lower = config_name.lower()
+
+    # Priority: 0 = heterogeneous (first), 1 = multi-turn (second), 2 = others (last)
+    if "heterogeneous" in config_lower:
+        priority = 0
+    elif "multi-turn" in config_lower or "multi_turn" in config_lower:
+        priority = 1
+    else:
+        priority = 2
+
+    return (priority, config_name)
+
+
 def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.DataFrame:
     """
     Convert Caliper UnifiedResultRecord objects to pandas DataFrame for analysis.
@@ -86,157 +145,95 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
         # Create legend name using only varying parameters
         legend_name = create_legend_name(record, varying_params)
 
-        # Check if this is curve data (new format) or scalar data (old format)
-        has_curves = "performance_curves" in record.metrics
+        # Extract performance curves data
         request_rates = record.metrics.get("request_rate", [])
 
-        if has_curves and isinstance(request_rates, list) and len(request_rates) > 0:
-            # New format: expand performance curves into multiple data points
-            logger.info(
-                f"   🔄 Expanding performance curves for {legend_name} ({len(request_rates)} points)"
-            )
-            curves = record.metrics.get("performance_curves", {})
+        if not (
+            isinstance(request_rates, list)
+            and len(request_rates) > 0
+            and "performance_curves" in record.metrics
+        ):
+            # Skip records that don't have the expected curve format
+            logger.info(f"   ⚠️  Skipping {legend_name} - no performance curves found")
+            continue
 
-            for i, rate in enumerate(request_rates):
-                # Create one row per rate point
-                row = {
-                    # Identity and configuration
-                    "test_configuration": legend_name,
-                    "test_base_path": record.test_base_path,
-                    "rate_point_index": i,
-                    # All distinguishing labels as individual columns
-                    **{f"label_{k}": v for k, v in record.distinguishing_labels.items()},
-                    # Core performance metrics from curves
-                    "strategy": record.metrics.get("strategy", "unknown"),
-                    "duration": record.metrics.get("duration", 0.0),
-                    "request_concurrency": _safe_get_curve_value(
-                        curves,
-                        "request_concurrency",
-                        i,
-                        record.metrics.get("request_concurrency", 1.0),
-                    ),
-                    "request_rate": rate,
-                    "completed_requests": _safe_get_curve_value(curves, "completed_requests", i, 0),
-                    "failed_requests": _safe_get_curve_value(curves, "failed_requests", i, 0),
-                    # Token metrics from curves
-                    "tokens_per_second": _safe_get_curve_value(curves, "tokens_per_second", i, 0.0),
-                    "input_tokens_per_second": _safe_get_curve_value(
-                        curves, "input_tokens_per_second", i, 0.0
-                    ),
-                    "output_tokens_per_second": _safe_get_curve_value(
-                        curves, "output_tokens_per_second", i, 0.0
-                    ),
-                    "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
-                    "output_tokens_per_request": record.metrics.get(
-                        "output_tokens_per_request", 0.0
-                    ),
-                    "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
-                    # Latency metrics from curves (convert seconds to ms where needed)
-                    "request_latency_median_ms": _safe_get_curve_value(
-                        curves, "request_latency_median", i, 0.0
-                    )
-                    * 1000,
-                    "request_latency_p95_ms": _safe_get_curve_value(
-                        curves, "request_latency_p95", i, 0.0
-                    )
-                    * 1000,
-                    "ttft_median_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
-                    "ttft_p10_ms": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
-                    "ttft_p25_ms": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
-                    "ttft_p50_ms": _safe_get_curve_value(
-                        curves, "ttft_median", i, 0.0
-                    ),  # p50 = median
-                    "ttft_p75_ms": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
-                    "ttft_p90_ms": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
-                    "ttft_p95_ms": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
-                    "itl_median_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),
-                    "itl_p10_ms": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
-                    "itl_p25_ms": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
-                    "itl_p50_ms": _safe_get_curve_value(
-                        curves, "itl_median", i, 0.0
-                    ),  # p50 = median
-                    "itl_p75_ms": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
-                    "itl_p90_ms": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
-                    "itl_p95_ms": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
-                    "tpot_median_ms": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
-                    "tpot_p95_ms": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
-                    # Output token throughput percentiles (not in curves currently, use zeros)
-                    "output_tokens_per_second_p10": 0.0,
-                    "output_tokens_per_second_p25": 0.0,
-                    "output_tokens_per_second_p50": _safe_get_curve_value(
-                        curves, "output_tokens_per_second", i, 0.0
-                    ),
-                    "output_tokens_per_second_p75": 0.0,
-                    "output_tokens_per_second_p90": 0.0,
-                }
-                data.append(row)
-        else:
-            # Old format: single data point per record (backward compatibility)
-            logger.info(f"   📊 Using scalar metrics for {legend_name}")
-            # Extract scalar request_rate if it's a single value
-            request_rate = (
-                request_rates[0]
-                if isinstance(request_rates, list) and len(request_rates) > 0
-                else record.metrics.get("request_rate", 0.0)
-            )
+        # Expand performance curves into multiple data points
+        logger.info(
+            f"   🔄 Expanding performance curves for {legend_name} ({len(request_rates)} points)"
+        )
+        curves = record.metrics.get("performance_curves", {})
 
+        for i, rate in enumerate(request_rates):
+            # Create one row per rate point
             row = {
                 # Identity and configuration
                 "test_configuration": legend_name,
                 "test_base_path": record.test_base_path,
-                "rate_point_index": 0,
+                "rate_point_index": i,
                 # All distinguishing labels as individual columns
                 **{f"label_{k}": v for k, v in record.distinguishing_labels.items()},
-                # Core performance metrics
+                # Core performance metrics from curves
                 "strategy": record.metrics.get("strategy", "unknown"),
                 "duration": record.metrics.get("duration", 0.0),
-                "request_concurrency": record.metrics.get("request_concurrency", 1.0),
-                "request_rate": request_rate,
-                "completed_requests": record.metrics.get("completed_requests", 0),
-                "failed_requests": record.metrics.get("failed_requests", 0),
-                # Token metrics
-                "tokens_per_second": record.metrics.get("tokens_per_second", 0.0),
-                "input_tokens_per_second": record.metrics.get("input_tokens_per_second", 0.0),
-                "output_tokens_per_second": record.metrics.get("output_tokens_per_second", 0.0),
+                "request_concurrency": _safe_get_curve_value(
+                    curves,
+                    "request_concurrency",
+                    i,
+                    record.metrics.get("request_concurrency", 1.0),
+                ),
+                "intended_concurrency": _safe_get_curve_value(
+                    curves,
+                    "intended_concurrency",
+                    i,
+                    record.metrics.get("request_concurrency", 1.0),
+                ),
+                "request_rate": rate,
+                "completed_requests": _safe_get_curve_value(curves, "completed_requests", i, 0),
+                "failed_requests": _safe_get_curve_value(curves, "failed_requests", i, 0),
+                # Token metrics from curves
+                "tokens_per_second": _safe_get_curve_value(curves, "tokens_per_second", i, 0.0),
+                "input_tokens_per_second": _safe_get_curve_value(
+                    curves, "input_tokens_per_second", i, 0.0
+                ),
+                "output_tokens_per_second": _safe_get_curve_value(
+                    curves, "output_tokens_per_second", i, 0.0
+                ),
                 "input_tokens_per_request": record.metrics.get("input_tokens_per_request", 0.0),
                 "output_tokens_per_request": record.metrics.get("output_tokens_per_request", 0.0),
                 "total_tokens_per_request": record.metrics.get("total_tokens_per_request", 0.0),
-                # Latency metrics (in ms for consistency with topsail)
-                "request_latency_median_ms": record.metrics.get("request_latency_median", 0.0)
+                # Latency metrics from curves (convert seconds to ms where needed)
+                "request_latency_median_ms": _safe_get_curve_value(
+                    curves, "request_latency_median", i, 0.0
+                )
                 * 1000,
-                "request_latency_p95_ms": record.metrics.get("request_latency_p95", 0.0) * 1000,
-                "ttft_median_ms": record.metrics.get("ttft_median", 0.0),
-                "ttft_p10_ms": record.metrics.get("ttft_p10", 0.0),
-                "ttft_p25_ms": record.metrics.get("ttft_p25", 0.0),
-                "ttft_p50_ms": record.metrics.get("ttft_p50", 0.0),
-                "ttft_p75_ms": record.metrics.get("ttft_p75", 0.0),
-                "ttft_p90_ms": record.metrics.get("ttft_p90", 0.0),
-                "ttft_p95_ms": record.metrics.get("ttft_p95", 0.0),
-                "itl_median_ms": record.metrics.get("itl_median", 0.0),
-                "itl_p10_ms": record.metrics.get("itl_p10", 0.0),
-                "itl_p25_ms": record.metrics.get("itl_p25", 0.0),
-                "itl_p50_ms": record.metrics.get("itl_p50", 0.0),
-                "itl_p75_ms": record.metrics.get("itl_p75", 0.0),
-                "itl_p90_ms": record.metrics.get("itl_p90", 0.0),
-                "itl_p95_ms": record.metrics.get("itl_p95", 0.0),
-                "tpot_median_ms": record.metrics.get("tpot_median", 0.0),
-                "tpot_p95_ms": record.metrics.get("tpot_p95", 0.0),
-                # Output token throughput percentiles
-                "output_tokens_per_second_p10": record.metrics.get(
-                    "output_tokens_per_second_p10", 0.0
+                "request_latency_p95_ms": _safe_get_curve_value(
+                    curves, "request_latency_p95", i, 0.0
+                )
+                * 1000,
+                "ttft_median_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),
+                "ttft_p10_ms": _safe_get_curve_value(curves, "ttft_p10", i, 0.0),
+                "ttft_p25_ms": _safe_get_curve_value(curves, "ttft_p25", i, 0.0),
+                "ttft_p50_ms": _safe_get_curve_value(curves, "ttft_median", i, 0.0),  # p50 = median
+                "ttft_p75_ms": _safe_get_curve_value(curves, "ttft_p75", i, 0.0),
+                "ttft_p90_ms": _safe_get_curve_value(curves, "ttft_p90", i, 0.0),
+                "ttft_p95_ms": _safe_get_curve_value(curves, "ttft_p95", i, 0.0),
+                "itl_median_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),
+                "itl_p10_ms": _safe_get_curve_value(curves, "itl_p10", i, 0.0),
+                "itl_p25_ms": _safe_get_curve_value(curves, "itl_p25", i, 0.0),
+                "itl_p50_ms": _safe_get_curve_value(curves, "itl_median", i, 0.0),  # p50 = median
+                "itl_p75_ms": _safe_get_curve_value(curves, "itl_p75", i, 0.0),
+                "itl_p90_ms": _safe_get_curve_value(curves, "itl_p90", i, 0.0),
+                "itl_p95_ms": _safe_get_curve_value(curves, "itl_p95", i, 0.0),
+                "tpot_median_ms": _safe_get_curve_value(curves, "tpot_median", i, 0.0),
+                "tpot_p95_ms": _safe_get_curve_value(curves, "tpot_p95", i, 0.0),
+                # Output token throughput percentiles (not in curves currently, use zeros)
+                "output_tokens_per_second_p10": 0.0,
+                "output_tokens_per_second_p25": 0.0,
+                "output_tokens_per_second_p50": _safe_get_curve_value(
+                    curves, "output_tokens_per_second", i, 0.0
                 ),
-                "output_tokens_per_second_p25": record.metrics.get(
-                    "output_tokens_per_second_p25", 0.0
-                ),
-                "output_tokens_per_second_p50": record.metrics.get(
-                    "output_tokens_per_second_p50", 0.0
-                ),
-                "output_tokens_per_second_p75": record.metrics.get(
-                    "output_tokens_per_second_p75", 0.0
-                ),
-                "output_tokens_per_second_p90": record.metrics.get(
-                    "output_tokens_per_second_p90", 0.0
-                ),
+                "output_tokens_per_second_p75": 0.0,
+                "output_tokens_per_second_p90": 0.0,
             }
             data.append(row)
 
@@ -249,10 +246,24 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
 
     # Sort for consistent ordering
     logger.info("📋 Organizing data by configuration, concurrency, and request rate...")
+    # Add custom sort column to ensure heterogeneous comes before multi-turn
+    df["_config_sort_key"] = df["test_configuration"].apply(
+        lambda x: _custom_configuration_sort_key(x)[0]
+    )
+
     # Sort and fill any NaN values in numeric columns with 0 for consistent plotting
     df = df.sort_values(
-        ["test_configuration", "request_concurrency", "request_rate", "rate_point_index"]
+        [
+            "_config_sort_key",
+            "test_configuration",
+            "intended_concurrency",
+            "request_rate",
+            "rate_point_index",
+        ]
     )
+
+    # Remove the temporary sort column
+    df = df.drop(columns=["_config_sort_key"])
 
     # Fill NaN values in numeric columns with appropriate defaults
     numeric_columns = [
@@ -264,8 +275,8 @@ def create_dataframe_from_records(records: list[UnifiedResultRecord]) -> pd.Data
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # Show what we found
-    configs = df["test_configuration"].unique()
+    # Show what we found - preserve custom sort order
+    configs = df["test_configuration"].drop_duplicates().tolist()
     total_records = len(
         [
             r
@@ -303,9 +314,12 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
 
         title = f"Request Throughput vs Concurrency by Configuration{title_context}"
 
+        # Get ordered configuration list to maintain consistent legend order
+        config_order = df["test_configuration"].drop_duplicates().tolist()
+
         fig = px.scatter(
             df,
-            x="request_concurrency",
+            x="intended_concurrency",
             y="request_rate",
             color="test_configuration",
             size="tokens_per_second",
@@ -314,19 +328,20 @@ def create_throughput_scaling_plot(df: pd.DataFrame, title_context: str = ""):
                 "request_latency_median_ms": ":.1f",
                 "ttft_median_ms": ":.1f",
                 "tokens_per_second": ":.0f",
+                "request_concurrency": ":.1f",  # Show achieved concurrency in hover
             },
             title=title,
             labels={
-                "request_concurrency": "Concurrency Level",
+                "intended_concurrency": "Concurrency Level (Requested)",
                 "request_rate": "Request Rate (req/s)",
                 "test_configuration": "Configuration",
+                "request_concurrency": "Achieved Concurrency",
             },
+            category_orders={"test_configuration": config_order},
         )
 
         fig.update_traces(textposition="top center")
-        fig.update_layout(
-            showlegend=True, width=800, height=500, font={"size": 12}, title_font_size=16
-        )
+        fig.update_layout(showlegend=True, **PLOT_CONFIG)
         fig.update_yaxes(rangemode="tozero")
 
         logger.info("✅ Throughput scaling plot created successfully")
@@ -349,24 +364,31 @@ def create_latency_vs_throughput_plot(df: pd.DataFrame, title_context: str = "")
 
         title = f"Latency vs Throughput Trade-off{title_context}"
 
+        # Get ordered configuration list to maintain consistent legend order
+        config_order = df["test_configuration"].drop_duplicates().tolist()
+
         fig = px.scatter(
             df,
             x="request_rate",
             y="request_latency_median_ms",
             color="test_configuration",
             size="tokens_per_second",
-            hover_data={"strategy": True, "request_concurrency": True, "ttft_median_ms": ":.1f"},
+            hover_data={
+                "strategy": True,
+                "intended_concurrency": ":.1f",
+                "request_concurrency": ":.1f",
+                "ttft_median_ms": ":.1f",
+            },
             title=title,
             labels={
                 "request_rate": "Request Rate (req/s)",
                 "request_latency_median_ms": "Latency (ms)",
                 "test_configuration": "Configuration",
             },
+            category_orders={"test_configuration": config_order},
         )
 
-        fig.update_layout(
-            showlegend=True, width=800, height=500, font={"size": 12}, title_font_size=16
-        )
+        fig.update_layout(showlegend=True, **PLOT_CONFIG)
 
         logger.info("✅ Latency vs throughput plot created successfully")
         return fig
@@ -386,11 +408,39 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
             logger.info("⚠️  No data available for token throughput vs concurrency plot")
             return None
 
-        title = f"Token Throughput vs Concurrency{title_context}<br><sub>Higher is better</sub>"
+        # Check for deployment_profile values and add to subtitle if not in legend
+        subtitle_parts = ["Higher is better"]
+
+        if "label_deployment_profile" in df.columns:
+            deployment_profiles = df["label_deployment_profile"].dropna().unique()
+            if len(deployment_profiles) > 0:
+                # Check if deployment_profile values are already part of the legend names
+                legend_values = df["test_configuration"].unique()
+                profile_in_legend = any(
+                    any(
+                        str(profile).lower() in str(legend).lower()
+                        for profile in deployment_profiles
+                    )
+                    for legend in legend_values
+                )
+
+                if not profile_in_legend:
+                    if len(deployment_profiles) == 1:
+                        subtitle_parts.append(f"Deployment Profile: {deployment_profiles[0]}")
+                    else:
+                        subtitle_parts.append(
+                            f"Deployment Profiles: {', '.join(deployment_profiles)}"
+                        )
+
+        subtitle = " | ".join(subtitle_parts)
+        title = f"Token Throughput vs Concurrency{title_context}<br><sub>{subtitle}</sub>"
+
+        # Get ordered configuration list to maintain consistent legend order
+        config_order = df["test_configuration"].drop_duplicates().tolist()
 
         fig = px.line(
             df,
-            x="request_concurrency",
+            x="intended_concurrency",
             y="tokens_per_second",
             color="test_configuration",
             markers=True,
@@ -399,19 +449,20 @@ def create_token_throughput_vs_concurrency_plot(df: pd.DataFrame, title_context:
                 "request_rate": ":.1f",
                 "ttft_median_ms": ":.1f",
                 "request_latency_median_ms": ":.1f",
+                "request_concurrency": ":.1f",  # Show achieved concurrency in hover
             },
             title=title,
             labels={
-                "request_concurrency": "Concurrency Level",
+                "intended_concurrency": "Concurrency Level (Requested)",
                 "tokens_per_second": "Tokens per Second",
                 "test_configuration": "Configuration",
+                "request_concurrency": "Achieved Concurrency",
             },
+            category_orders={"test_configuration": config_order},
         )
 
         fig.update_traces(mode="lines+markers")
-        fig.update_layout(
-            showlegend=True, width=800, height=500, font={"size": 12}, title_font_size=16
-        )
+        fig.update_layout(showlegend=True, **PLOT_CONFIG)
         fig.update_yaxes(rangemode="tozero")
 
         logger.info("✅ Token throughput vs concurrency plot created successfully")
@@ -434,25 +485,33 @@ def create_ttft_analysis_plot(df: pd.DataFrame, title_context: str = ""):
 
         title = f"TTFT vs Concurrency{title_context}<br><sub>Lower is better</sub>"
 
+        # Get ordered configuration list to maintain consistent legend order
+        config_order = df["test_configuration"].drop_duplicates().tolist()
+
         fig = px.line(
             df,
-            x="request_concurrency",
+            x="intended_concurrency",
             y="ttft_median_ms",
             color="test_configuration",
             markers=True,
-            hover_data={"strategy": True, "request_rate": ":.1f", "tokens_per_second": ":.0f"},
+            hover_data={
+                "strategy": True,
+                "request_rate": ":.1f",
+                "tokens_per_second": ":.0f",
+                "request_concurrency": ":.1f",  # Show achieved concurrency in hover
+            },
             title=title,
             labels={
-                "request_concurrency": "Concurrency Level",
+                "intended_concurrency": "Concurrency Level (Requested)",
                 "ttft_median_ms": "TTFT P50 (ms)",
                 "test_configuration": "Configuration",
+                "request_concurrency": "Achieved Concurrency",
             },
+            category_orders={"test_configuration": config_order},
         )
 
         fig.update_traces(mode="lines+markers")
-        fig.update_layout(
-            showlegend=True, width=800, height=500, font={"size": 12}, title_font_size=16
-        )
+        fig.update_layout(showlegend=True, **PLOT_CONFIG)
         fig.update_yaxes(rangemode="tozero")
 
         logger.info("✅ TTFT analysis plot created successfully")
@@ -478,8 +537,8 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
 
         fig = go.Figure()
 
-        # Get unique configurations and colors
-        configurations = sorted(df["test_configuration"].unique())
+        # Get unique configurations and colors - maintain custom sort order
+        configurations = df["test_configuration"].drop_duplicates().tolist()
         logger.info(
             f"   Plotting {len(configurations)} configurations with percentile distributions..."
         )
@@ -500,13 +559,13 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
         logger.info(f"   Adding {len(percentiles)} percentile lines per configuration...")
 
         for config in configurations:
-            config_df = df[df["test_configuration"] == config].sort_values("request_concurrency")
+            config_df = df[df["test_configuration"] == config].sort_values("intended_concurrency")
 
             for perc_name, perc_col, line_style, opacity in percentiles:
                 if perc_col in config_df.columns and not config_df[perc_col].isna().all():
                     fig.add_trace(
                         go.Scatter(
-                            x=config_df["request_concurrency"],
+                            x=config_df["intended_concurrency"],
                             y=config_df[perc_col],
                             mode="lines+markers",
                             name=f"{config} - {perc_name}",
@@ -517,13 +576,10 @@ def create_token_throughput_percentiles_plot(df: pd.DataFrame, title_context: st
 
         fig.update_layout(
             title=title,
-            xaxis_title="Concurrency Level",
+            xaxis_title="Concurrency Level (Requested)",
             yaxis_title="Output Tokens per Second",
             showlegend=True,
-            width=900,
-            height=600,
-            font={"size": 12},
-            title_font_size=16,
+            **PLOT_CONFIG_LARGE,
         )
         fig.update_yaxes(rangemode="tozero")
 
@@ -636,8 +692,8 @@ def generate_token_throughput_percentiles_analysis(
         "token_throughput_percentiles",
         as_image,
         report_number,
-        width=900,
-        height=600,
+        width=PLOT_CONFIG_LARGE["width"],
+        height=PLOT_CONFIG_LARGE["height"],
     )
 
 
@@ -900,8 +956,9 @@ def generate_deployment_profile_report(
                         filename = f"{group_name}_{plot_name.lower().replace(' ', '_')}"
 
                         # Save PNG image
-                        width = 900 if "Percentiles" in plot_name else 800
-                        height = 600 if "Percentiles" in plot_name else 500
+                        config = PLOT_CONFIG_LARGE if "Percentiles" in plot_name else PLOT_CONFIG
+                        width = config["width"]
+                        height = config["height"]
                         png_path = save_figure(
                             fig, group_dir, filename, as_image=True, width=width, height=height
                         )
@@ -1044,6 +1101,7 @@ def generate_deployment_profile_report(
             border: 1px solid #ddd;
             border-radius: 4px;
         }}
+
     </style>
 
     <script>
@@ -1141,11 +1199,13 @@ def generate_deployment_profile_report(
 
             if throughput_plot:
                 plot_name, png_path, html_path = throughput_plot
+                # Convert PNG to base64 data URI
+                png_base64 = _image_to_base64(Path(output_dir) / png_path)
                 html_content += f"""
         <div style='padding:20px;'>
             <h4>🚀 {plot_name}</h4>
             <p>Token generation throughput scaling analysis across different concurrency levels.</p>
-            <p><a href='{html_path}' target='_blank' title='Click to access the full-size interactive version.'><img src='{png_path}' alt='{plot_name}'/></a></p>
+            <img src='{png_base64}' style='width: 100%; max-width: 1700px; height: auto; border: 1px solid #ddd; border-radius: 4px;' alt='{plot_name}' title='{plot_name}'/>
         </div>
     </div>"""
             else:
@@ -1295,8 +1355,9 @@ def generate_comprehensive_performance_report(
                         filename = f"{loadshape}_{plot_name.lower().replace(' ', '_')}"
 
                         # Save PNG image
-                        width = 900 if "Percentiles" in plot_name else 800
-                        height = 600 if "Percentiles" in plot_name else 500
+                        config = PLOT_CONFIG_LARGE if "Percentiles" in plot_name else PLOT_CONFIG
+                        width = config["width"]
+                        height = config["height"]
                         png_path = save_figure(
                             fig, loadshape_dir, filename, as_image=True, width=width, height=height
                         )
@@ -1433,6 +1494,7 @@ def generate_comprehensive_performance_report(
             border: 1px solid #ddd;
             border-radius: 4px;
         }}
+
     </style>
 
     <script>
@@ -1535,16 +1597,18 @@ def generate_comprehensive_performance_report(
                 "Latency vs Throughput": "Trade-off analysis between latency and throughput performance.",
             }
 
-            for tab_idx, (plot_name, png_path, html_path) in enumerate(plots):
+            for tab_idx, (plot_name, png_path, _html_path) in enumerate(plots):
                 active_class = " active" if tab_idx == 0 else ""
                 description = descriptions.get(plot_name, f"{plot_name} performance analysis.")
+                # Convert PNG to base64 data URI
+                png_base64 = _image_to_base64(Path(output_dir) / png_path)
 
                 html_content += f"""
             <div id='tab-{container_id}-{tab_idx}' class='tab-content{active_class}'>
                 <div style='padding:20px;'>
                     <h4>{plot_name}</h4>
                     <p>{description}</p>
-                    <p><a href='{html_path}' target='_blank' title='Click to access the full-size interactive version.'><img src='{png_path}' alt='{plot_name}'/></a></p>
+                    <img src='{png_base64}' style='width: 100%; max-width: 1700px; height: auto; border: 1px solid #ddd; border-radius: 4px;' alt='{plot_name}' title='{plot_name}'/>
                 </div>
             </div>"""
 
@@ -1591,7 +1655,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
     # Find best performers
     best_tokens_idx = df["tokens_per_second"].idxmax()
     best_efficiency_idx = (
-        df["tokens_per_second"] / df["request_concurrency"].replace(0, 1)
+        df["tokens_per_second"] / df["intended_concurrency"].replace(0, 1)
     ).idxmax()
     best_ttft_idx = df["ttft_median_ms"].idxmin()
 
@@ -1604,6 +1668,7 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
                 "tokens_per_second": "max",
                 "ttft_median_ms": "mean",
                 "request_rate": "max",
+                "intended_concurrency": "max",
                 "request_concurrency": "max",
             }
         )
@@ -1619,11 +1684,11 @@ def _generate_performance_summary(df: pd.DataFrame) -> dict[str, Any]:
             "value": df.loc[best_tokens_idx, "tokens_per_second"],
             "config": df.loc[best_tokens_idx, "test_configuration"],
             "strategy": df.loc[best_tokens_idx, "strategy"],
-            "concurrency": df.loc[best_tokens_idx, "request_concurrency"],
+            "concurrency": df.loc[best_tokens_idx, "intended_concurrency"],
         },
         "best_efficiency": {
             "value": df.loc[best_efficiency_idx, "tokens_per_second"]
-            / max(df.loc[best_efficiency_idx, "request_concurrency"], 1),
+            / max(df.loc[best_efficiency_idx, "intended_concurrency"], 1),
             "config": df.loc[best_efficiency_idx, "test_configuration"],
             "strategy": df.loc[best_efficiency_idx, "strategy"],
         },
@@ -1640,6 +1705,7 @@ def _create_comprehensive_html_report_with_images(
     plots_data: list[tuple[str, str, str]],
     summary_stats: dict[str, Any],
     title_context: str,
+    output_dir: Path,
     display_title: str = "GuideLLM Performance Analysis",
 ) -> str:
     """Create comprehensive HTML performance analysis report with embedded or linked images."""
@@ -1693,6 +1759,7 @@ def _create_comprehensive_html_report_with_images(
             margin: 10px 0;
             cursor: pointer;
         }}
+
         .plot-link {{
             display: inline-block;
             margin: 10px 15px 10px 0;
@@ -1735,16 +1802,15 @@ def _create_comprehensive_html_report_with_images(
 
     # Analysis plots section
     if plots_data:
-        for plot_name, png_path, html_path in plots_data:
-            # Image linked to HTML version
+        for plot_name, png_path, _html_path in plots_data:
+            # Convert PNG to base64 data URI for embedding
+            png_base64 = _image_to_base64(Path(output_dir) / png_path)
             html_parts.append(f"""
     <div class="plot-section">
         <h3>📈 {plot_name}</h3>
-        <a href="{html_path}" target="_blank">
-            <img src="{png_path}" alt="{plot_name}" class="plot-image" title="Click to view interactive version">
-        </a>
+        <img src="{png_base64}" style="width: 100%; max-width: 1700px; height: auto; border: 1px solid #ddd; border-radius: 5px; margin: 10px 0;" alt="{plot_name}" title="{plot_name}"/>
         <br>
-        <small>💡 Click image to view interactive version</small>
+        <small>💡 Performance visualization with comprehensive metrics analysis</small>
     </div>""")
 
     # Footer

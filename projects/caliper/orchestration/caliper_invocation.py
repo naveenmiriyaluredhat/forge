@@ -38,7 +38,7 @@ def _generate_automatic_status_file_path(artifacts_dir: Path, operation: str) ->
     status_dir.mkdir(parents=True, exist_ok=True)
 
     # Find next available index
-    existing_files = list(status_dir.glob(f"*__{operation}.yaml"))
+    existing_files = list(status_dir.glob("*__*.yaml"))
     if existing_files:
         # Extract indices from existing files
         indices = []
@@ -115,7 +115,7 @@ def _execute_caliper_command(
     # Create script file for debugging in step_scripts directory with index prefix
     step_scripts_dir = env.ARTIFACT_DIR / "step_scripts"
     step_scripts_dir.mkdir(parents=True, exist_ok=True)
-    script_file = step_scripts_dir / f"{step_index:03d}__{step_name_safe}.sh"
+    script_file = step_scripts_dir / f"{step_index:03d}__{step_name_safe}.sh.txt"
 
     # Log start banner and save script
     log_caliper_start_banner(command, script_file, step_name.upper())
@@ -415,38 +415,8 @@ def run_analyse_kpis(
             step_logs_dir=step_logs_dir,
         )
 
-        # Check success condition, accounting for regression override
-        # Regression detection with exit code 3 is considered successful analysis
-        regression_analysis_success = (
-            result.returncode == 3
-            and status_data.get("regressions_detected")
-            and "output_file" in status_data
-        )
+        command_succeeded = result.returncode == 0 and status_data.get("success")
 
-        orchestration_success = (
-            result.returncode == 0 and status_data.get("success")
-        ) or regression_analysis_success
-
-        if not orchestration_success:
-            # Include only summary data in failure case too
-            summary_fields = [
-                "success",
-                "regressions_detected",
-                "baseline_source_count",
-                "tested",
-                "overall",
-            ]
-            analysis_summary = {k: v for k, v in status_data.items() if k in summary_fields}
-
-            return {
-                "status": "failed",
-                "error": status_data.get("error", "Unknown error"),
-                "completed_at": time.time(),
-                "log_file": log_file,
-                **analysis_summary,
-            }
-
-        # Include only summary data, not detailed results
         summary_fields = [
             "success",
             "regressions_detected",
@@ -456,13 +426,32 @@ def run_analyse_kpis(
         ]
         analysis_summary = {k: v for k, v in status_data.items() if k in summary_fields}
 
-        return {
-            "status": "success",
-            "output_file": _make_path_relative_to_base(output_file, env.ARTIFACT_DIR),
+        # Determine final status based on command success and regression policy
+        if command_succeeded:
+            final_status = "success"
+            error_message = None
+        else:
+            # Command failed - check if we should treat as failure or warning
+            fail_on_regression = postprocess_config.analyze.fail_on_regression
+            final_status = "failed" if fail_on_regression else "warning"
+            error_message = status_data.get("error") or status_data.get(
+                "message", "Analysis failed"
+            )
+
+        # Build result data with consistent field usage
+        result_data = {
             "completed_at": time.time(),
             "log_file": log_file,
+            "output_file": _make_path_relative_to_base(output_file, env.ARTIFACT_DIR),
+            "status": final_status,
             **analysis_summary,
         }
+
+        # Add error/message field if there's an issue
+        if error_message:
+            result_data["error"] = error_message
+
+        return result_data
 
     except Exception as e:
         logger.exception("KPI analysis failed in run_analyse_kpis")
