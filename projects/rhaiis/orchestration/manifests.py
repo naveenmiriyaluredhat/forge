@@ -72,7 +72,7 @@ def build_servingruntime(
         )
         if gpu_count > 1:
             manifest["spec"]["volumes"] = [
-                {"name": "shared-memory", "emptyDir": {"medium": "Memory", "sizeLimit": "64Gi"}},
+                {"name": "shared-memory", "emptyDir": {"medium": "Memory", "sizeLimit": "216Gi"}},
             ]
 
     manifest["spec"]["containers"] = [container]
