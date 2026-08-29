@@ -278,6 +278,8 @@ Available configOverrides:
 | `rhaiis.deploy.replicas` | Number of predictor replicas |
 | `rhaiis.deploy.memory_request` | Memory request for predictor (e.g. `256Gi` for TRT-LLM) |
 | `rhaiis.engines.vllm.args.*` | vLLM CLI args (e.g. `tensor-parallel-size`, `gpu-memory-utilization`) |
+| `rhaiis.env_vars.*` | Always-on pod env vars |
+| `rhaiis.dp_env_vars.*` | Pod env vars when `data-parallel-size > 1` (defaults: OpenBLAS/OMP threads=1) |
 | `rhaiis.engines.sglang.args.*` | SGLang CLI args (e.g. `tp-size`, `mem-fraction-static`, `context-length`) |
 | `rhaiis.engines.trtllm.args.*` | TRT-LLM CLI args (e.g. `tp_size`, `ep_size`, `max_batch_size`) |
 | `rhaiis.engines.trtllm.trtllm_config.*` | TRT-LLM server config (kv_cache, cuda_graph, moe) |
