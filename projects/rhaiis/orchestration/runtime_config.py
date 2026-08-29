@@ -101,6 +101,30 @@ _COMMON_ARG_TRANSLATIONS: dict[str, dict[str, str]] = {
 }
 
 
+def get_parallel_sizes(engine_args: dict | None) -> tuple[int, int]:
+    """Return (tensor_parallel, data_parallel) from engine args (any engine naming)."""
+    ea = engine_args or {}
+    tp = int(
+        ea.get("tensor-parallel-size")
+        or ea.get("tp-size")
+        or ea.get("tp_size")
+        or 1
+    )
+    dp = int(
+        ea.get("data-parallel-size")
+        or ea.get("dp-size")
+        or ea.get("dp_size")
+        or 1
+    )
+    return tp, dp
+
+
+def get_gpu_count(engine_args: dict | None) -> int:
+    """Total GPUs required: tensor-parallel × data-parallel."""
+    tp, dp = get_parallel_sizes(engine_args)
+    return tp * dp
+
+
 def _translate_args(args: dict, engine: str) -> dict:
     """Translate vLLM-style args to another engine's arg naming.
 

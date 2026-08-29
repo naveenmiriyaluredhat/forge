@@ -104,7 +104,7 @@ def resolve_hardware_request(hardware_spec: dict) -> dict:
     engine = runtime_config.get_engine()
     engine_defaults = _cfg.project.get_config(f"rhaiis.engines.{engine}.args") or {}
     ea = runtime_config.merge_engine_args(engine_defaults, model, {}, engine)
-    tp_size = int(ea.get("tensor-parallel-size") or ea.get("tp-size") or ea.get("tp_size") or 1)
+    gpu_count = runtime_config.get_gpu_count(ea)
 
     accelerator = runtime_config.get_accelerator()
     gpu_type = runtime_config.get_gpu_type(accelerator)
@@ -112,7 +112,7 @@ def resolve_hardware_request(hardware_spec: dict) -> dict:
     if not gpu_type:
         return {}
 
-    hardware_spec["gpuCount"] = tp_size
+    hardware_spec["gpuCount"] = gpu_count
     hardware_spec["gpuType"] = gpu_type
 
     return hardware_spec
