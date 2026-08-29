@@ -121,7 +121,7 @@ def _run_test(
     engine_args = runtime_config.merge_engine_args(
         engine_defaults, model_cfg, first_workload, engine
     )
-    env_vars = runtime_config.merge_env_vars(accelerator, model_cfg)
+    env_vars = runtime_config.merge_env_vars(accelerator, model_cfg, engine_args)
 
     from projects.core.library import config as _cfg
 

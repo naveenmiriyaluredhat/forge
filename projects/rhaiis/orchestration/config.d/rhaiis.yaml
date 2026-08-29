@@ -64,6 +64,14 @@ deploy:
 
 env_vars: {}
 
+# Applied automatically when data-parallel-size > 1 (avoids OpenBLAS thread explosion).
+# Override per-job via configOverrides, e.g. rhaiis.dp_env_vars.OPENBLAS_NUM_THREADS: "2"
+dp_env_vars:
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+
 accelerator_env_vars:
   nvidia: {}
   amd:

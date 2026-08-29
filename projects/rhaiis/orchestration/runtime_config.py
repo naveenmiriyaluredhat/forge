@@ -171,8 +171,22 @@ def merge_engine_args(
     return base
 
 
-def merge_env_vars(accelerator: str, model: dict) -> dict:
+def merge_env_vars(
+    accelerator: str,
+    model: dict,
+    engine_args: dict | None = None,
+) -> dict:
+    """Merge env vars: global → dp defaults (if DP>1) → model → accelerator.
+
+    DP defaults come from ``rhaiis.dp_env_vars`` and can be overridden via
+    FournosJob configOverrides or model ``env_vars``.
+    """
     base = dict(config.project.get_config("rhaiis.env_vars") or {})
+    _, dp = get_parallel_sizes(engine_args)
+    if dp > 1:
+        dp_vars = config.project.get_config("rhaiis.dp_env_vars") or {}
+        base.update(dict(dp_vars))
+        logger.info("Applying DP env vars (dp=%s): %s", dp, sorted(dp_vars.keys()))
     base.update(model.get("env_vars", {}))
     accel_vars = config.project.get_config(f"rhaiis.accelerator_env_vars.{accelerator}") or {}
     base.update(accel_vars)
