@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from projects.caliper.engine.kpi.analyze import (
     AnalysisConfig,
@@ -17,6 +16,7 @@ from projects.caliper.engine.kpi.analyze import (
     _run_regression_test,
     run_kpi_analysis,
 )
+from projects.caliper.engine.kpi.dataclasses import OverallStatus, RegressionReport
 
 
 def _make_hierarchical_kpi(
@@ -119,31 +119,31 @@ class TestRegressionTest:
         baselines = [{"value": 95.0, "labels": {}}, {"value": 100.0, "labels": {}}]
         config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
         result = _run_regression_test(current, baselines, config)
-        assert result["verdict"] != Verdict.REGRESSION
-        assert result["details"]["relative_change"] > 0
+        assert result.verdict != Verdict.REGRESSION
+        assert result.details["relative_change"] > 0
 
     def test_regression_higher_is_better(self):
         current = {"kpi_id": "throughput", "value": 80.0, "higher_is_better": True, "labels": {}}
         baselines = [{"value": 100.0, "labels": {}}, {"value": 100.0, "labels": {}}]
         config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
         result = _run_regression_test(current, baselines, config)
-        assert result["verdict"] == Verdict.REGRESSION
-        assert result["details"]["relative_change"] < -0.1
+        assert result.verdict == Verdict.REGRESSION
+        assert result.details["relative_change"] < -0.1
 
     def test_regression_lower_is_better(self):
         current = {"kpi_id": "latency", "value": 1.5, "higher_is_better": False, "labels": {}}
         baselines = [{"value": 1.0, "labels": {}}, {"value": 1.0, "labels": {}}]
         config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
         result = _run_regression_test(current, baselines, config)
-        assert result["verdict"] == Verdict.REGRESSION
-        assert result["details"]["relative_change"] > 0.1
+        assert result.verdict == Verdict.REGRESSION
+        assert result.details["relative_change"] > 0.1
 
     def test_no_regression_lower_is_better(self):
         current = {"kpi_id": "latency", "value": 0.9, "higher_is_better": False, "labels": {}}
         baselines = [{"value": 1.0, "labels": {}}]
         config = AnalysisConfig(regression_config={"max_relative_regression": 0.1})
         result = _run_regression_test(current, baselines, config)
-        assert result["verdict"] != Verdict.REGRESSION
+        assert result.verdict != Verdict.REGRESSION
 
 
 class TestEndToEnd:
@@ -199,23 +199,22 @@ class TestEndToEnd:
         self._write_hierarchical_kpi(historical_dir / "run1" / "kpis.json", baseline1)
         self._write_hierarchical_kpi(historical_dir / "run2" / "kpis.json", baseline2)
 
-        test_status, _ = run_kpi_analysis(
+        test_status, report = run_kpi_analysis(
             current_kpi_file=current_dir / "kpis.json",
             historical_data_dir=historical_dir,
             output_file=output_file,
             plugin_module="projects.caliper.tests.stub_plugin",
         )
 
-        assert test_status["exit_code"] == 0
+        assert test_status.exit_code == 0
+        assert test_status.success is True
         assert output_file.exists()
 
-        with open(output_file) as f:
-            report = yaml.safe_load(f)
+        assert report is not None
 
-        assert report["analysis"]["status"] == "PASS"
-        assert report["overall"]["verdict"] == "PASS"
-        assert report["overall"]["regression_count"] == 0
-        assert report["tested"]["total_kpis"] == 1
+        assert report.overall.verdict == OverallStatus.PASS
+        assert report.overall.regression_count == 0
+        assert report.tested.total_kpis == 1
 
     def test_regression_detected(self, tmp_path):
         current_dir = tmp_path / "current"
@@ -249,21 +248,22 @@ class TestEndToEnd:
         )
         self._write_hierarchical_kpi(historical_dir / "run1" / "kpis.json", baseline)
 
-        test_status, _ = run_kpi_analysis(
+        test_status, report = run_kpi_analysis(
             current_kpi_file=current_dir / "kpis.json",
             historical_data_dir=historical_dir,
             output_file=output_file,
             plugin_module="projects.caliper.tests.stub_plugin",
         )
 
-        assert test_status["exit_code"] == 3
-        with open(output_file) as f:
-            report = yaml.safe_load(f)
+        assert test_status.exit_code == 3
+        assert test_status.regressions_detected is True
 
-        assert report["analysis"]["status"] == "REGRESSION_DETECTED"
-        assert report["overall"]["regression_count"] == 1
-        assert report["results"][0]["verdict"] == "REGRESSION"
-        assert report["results"][0]["details"]["relative_change"] == pytest.approx(-0.3)
+        assert report is not None
+
+        assert report.overall.verdict == OverallStatus.REGRESSION_DETECTED
+        assert report.overall.regression_count == 1
+        assert report.results[0].verdict == Verdict.REGRESSION
+        assert report.results[0].details.get("relative_change") == pytest.approx(-0.3)
 
     def test_no_historical_data(self, tmp_path):
         current_dir = tmp_path / "current"
@@ -284,17 +284,20 @@ class TestEndToEnd:
         )
         self._write_hierarchical_kpi(current_dir / "kpis.json", current)
 
-        test_status, _ = run_kpi_analysis(
+        test_status, report = run_kpi_analysis(
             current_kpi_file=current_dir / "kpis.json",
             historical_data_dir=historical_dir,
             output_file=output_file,
             plugin_module="projects.caliper.tests.stub_plugin",
         )
 
-        assert test_status["exit_code"] == 2
+        assert test_status.exit_code == 2
+        assert test_status.success is True  # Warning, not failure
+        # For no baseline case, report might be None, load from file and convert to dataclass
         with open(output_file) as f:
-            report = yaml.safe_load(f)
-        assert report["overall"]["verdict"] == "NO_BASELINE"
+            report_dict = json.load(f)
+        report = RegressionReport.from_dict(report_dict)
+        assert report.analysis.status == OverallStatus.NO_BASELINE
 
     def test_mixed_regression_and_pass(self, tmp_path):
         current_dir = tmp_path / "current"
@@ -329,22 +332,23 @@ class TestEndToEnd:
         )
         self._write_hierarchical_kpi(historical_dir / "run1" / "kpis.json", baseline)
 
-        test_status, _ = run_kpi_analysis(
+        test_status, report = run_kpi_analysis(
             current_kpi_file=current_dir / "kpis.json",
             historical_data_dir=historical_dir,
             output_file=output_file,
             plugin_module="projects.caliper.tests.stub_plugin",
         )
 
-        assert test_status["exit_code"] == 3
-        with open(output_file) as f:
-            report = yaml.safe_load(f)
+        assert test_status.exit_code == 3
+        assert test_status.regressions_detected is True
 
-        assert report["overall"]["regression_count"] == 1
-        latency_result = next(r for r in report["results"] if r["kpi_id"] == "latency")
-        assert latency_result["verdict"] == "REGRESSION"
-        throughput_result = next(r for r in report["results"] if r["kpi_id"] == "throughput")
-        assert throughput_result["verdict"] == "PASS"
+        assert report is not None
+
+        assert report.overall.regression_count == 1
+        latency_result = next(r for r in report.results if r.kpi_id == "latency")
+        assert latency_result.verdict == Verdict.REGRESSION
+        throughput_result = next(r for r in report.results if r.kpi_id == "throughput")
+        assert throughput_result.verdict == Verdict.PASS
 
     def test_skips_non_scalar_kpis(self, tmp_path):
         current_dir = tmp_path / "current"
@@ -378,19 +382,20 @@ class TestEndToEnd:
         )
         self._write_hierarchical_kpi(historical_dir / "run1" / "kpis.json", baseline)
 
-        test_status, _ = run_kpi_analysis(
+        test_status, report = run_kpi_analysis(
             current_kpi_file=current_dir / "kpis.json",
             historical_data_dir=historical_dir,
             output_file=output_file,
             plugin_module="projects.caliper.tests.stub_plugin",
         )
 
-        assert test_status["exit_code"] == 0
-        with open(output_file) as f:
-            report = yaml.safe_load(f)
+        assert test_status.exit_code == 0
+        assert test_status.success is True
 
-        assert report["tested"]["skipped"] == 1
-        assert report["tested"]["total_kpis"] == 2
+        assert report is not None
+
+        assert report.tested.skipped == 1
+        assert report.tested.total_kpis == 2
 
     def test_comparison_keys_separate_baselines(self, tmp_path):
         """Records that differ on comparison_keys should still be matched."""
@@ -428,7 +433,7 @@ class TestEndToEnd:
 
         # With version as comparison_key, both match on platform=A100
         # (version excluded from match key, so records with different versions can be compared)
-        test_status, _ = run_kpi_analysis(
+        test_status, report = run_kpi_analysis(
             current_kpi_file=current_dir / "kpis.json",
             historical_data_dir=historical_dir,
             output_file=output_file,
@@ -437,10 +442,12 @@ class TestEndToEnd:
 
         # With comparison_labels=["version"], version is excluded from matching
         # Current v2.0 and baseline v1.0 both match on platform=A100 → regression test performed
-        assert test_status["exit_code"] == 0
-        with open(output_file) as f:
-            report = yaml.safe_load(f)
+        assert test_status.exit_code == 0
+        assert test_status.success is True
+
+        assert report is not None
+
         # Both records matched and regression test was performed (100.0 vs 95.0 = +5.26% improvement)
-        assert report["tested"]["total_kpis"] == 1
-        assert report["tested"]["pass"] == 1
-        assert report["overall"]["verdict"] == "PASS"
+        assert report.tested.total_kpis == 1
+        assert report.tested.pass_count == 1  # Note: pass_count field name in dataclass
+        assert report.overall.verdict == OverallStatus.PASS
